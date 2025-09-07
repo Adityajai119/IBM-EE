@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DevSensei Auth Debug</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .test-section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+        .success { background: #d4edda; border-color: #c3e6cb; }
+        .error { background: #f8d7da; border-color: #f5c6cb; }
+        .info { background: #d1ecf1; border-color: #bee5eb; }
+        button { padding: 10px 15px; margin: 5px; cursor: pointer; }
+        #console { background: #f8f9fa; padding: 10px; border: 1px solid #dee2e6; white-space: pre-wrap; font-family: monospace; max-height: 400px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <h1>🔍 DevSensei Authentication Debug</h1>
+    
+    <div class="test-section info">
+        <h3>1. Frontend Access Test</h3>
+        <div id="frontend-test">Testing...</div>
+        <button onclick="testFrontend()">Test Frontend</button>
+    </div>
+
+    <div class="test-section info">
+        <h3>2. React App Loading Test</h3>
+        <div id="react-test">Testing...</div>
+        <button onclick="testReactApp()">Test React App</button>
+    </div>
+
+    <div class="test-section info">
+        <h3>3. Authentication Buttons Test</h3>
+        <div id="auth-test">Testing...</div>
+        <button onclick="testAuthButtons()">Test Auth Buttons</button>
+    </div>
+
+    <div class="test-section info">
+        <h3>4. Console Output</h3>
+        <div id="console"></div>
+        <button onclick="clearConsole()">Clear</button>
+    </div>
+
+    <script>
+        function log(message, type = 'info') {
+            const console = document.getElementById('console');
+            const timestamp = new Date().toLocaleTimeString();
+            const prefix = type === 'error' ? '❌' : type === 'success' ? '✅' : 'ℹ️';
+            console.textContent += `[${timestamp}] ${prefix} ${message}\n`;
+            console.scrollTop = console.scrollHeight;
+        }
+
+        function setResult(elementId, message, type = 'info') {
+            const element = document.getElementById(elementId);
+            element.textContent = message;
+            element.className = `test-section ${type}`;
+        }
+
+        async function testFrontend() {
+            try {
+                log('Testing frontend access...');
+                const response = await fetch('/');
+                if (response.ok) {
+                    const html = await response.text();
+                    log(`Frontend accessible - Content length: ${html.length} chars`, 'success');
+                    setResult('frontend-test', `✅ Frontend accessible (${html.length} chars)`, 'success');
+                    
+                    // Check if it's a React app
+                    if (html.includes('root') && html.includes('main.tsx')) {
+                        log('React app structure detected', 'success');
+                    } else {
+                        log('React app structure not detected', 'error');
+                    }
+                } else {
+                    log(`Frontend error: ${response.status}`, 'error');
+                    setResult('frontend-test', `❌ Frontend error: ${response.status}`, 'error');
+                }
+            } catch (error) {
+                log(`Frontend error: ${error.message}`, 'error');
+                setResult('frontend-test', `❌ Frontend error: ${error.message}`, 'error');
+            }
+        }
+
+        async function testReactApp() {
+            try {
+                log('Testing React app loading...');
+                
+                // Try to access the main.tsx file
+                const response = await fetch('/src/main.tsx');
+                if (response.ok) {
+                    log('main.tsx accessible', 'success');
+                    setResult('react-test', '✅ React app files accessible', 'success');
+                } else {
+                    log(`main.tsx not accessible: ${response.status}`, 'error');
+                    setResult('react-test', `❌ React app files not accessible: ${response.status}`, 'error');
+                }
+            } catch (error) {
+                log(`React app test error: ${error.message}`, 'error');
+                setResult('react-test', `❌ React app test error: ${error.message}`, 'error');
+            }
+        }
+
+        async function testAuthButtons() {
+            try {
+                log('Testing authentication buttons...');
+                
+                // Try to access the main app
+                const response = await fetch('http://localhost:5174');
+                const html = await response.text();
+                
+                // Check for authentication-related content
+                const authKeywords = ['Google', 'GitHub', 'auth', 'login', 'signin', 'button'];
+                const foundKeywords = authKeywords.filter(keyword => 
+                    html.toLowerCase().includes(keyword.toLowerCase())
+                );
+                
+                if (foundKeywords.length > 0) {
+                    log(`Found auth keywords: ${foundKeywords.join(', ')}`, 'success');
+                    setResult('auth-test', `✅ Found auth keywords: ${foundKeywords.join(', ')}`, 'success');
+                } else {
+                    log('No auth keywords found in HTML', 'error');
+                    setResult('auth-test', '❌ No auth keywords found', 'error');
+                }
+            } catch (error) {
+                log(`Auth buttons test error: ${error.message}`, 'error');
+                setResult('auth-test', `❌ Auth buttons test error: ${error.message}`, 'error');
+            }
+        }
+
+        function clearConsole() {
+            document.getElementById('console').textContent = '';
+        }
+
+        // Auto-run tests on load
+        window.onload = function() {
+            log('DevSensei Auth Debug Page Loaded');
+            testFrontend();
+        };
+    </script>
+</body>
+</html>
