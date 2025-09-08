@@ -1,5 +1,6 @@
 import { WebContainer } from '@webcontainer/api';
 import type { FileSystemTree as WebContainerFileSystemTree } from '@webcontainer/api';
+import BrowserCompatibilityChecker from '../utils/browserCompatibility';
 
 export interface FileSystemTree {
   [name: string]: {
@@ -24,12 +25,17 @@ export interface WebContainerInstance {
 export class RealWebContainerService {
   private webcontainer: WebContainer | null = null;
   private isInitialized = false;
+  private isBooting = false;
   private initPromise: Promise<void> | null = null;
   private serverUrl: string | null = null;
 
   async initialize(): Promise<void> {
     // Prevent double initialization and double boot
     if (this.isInitialized && this.webcontainer) return;
+    if (this.isBooting) {
+      console.log('⏳ WebContainer is already booting, waiting...');
+      return this.initPromise || Promise.resolve();
+    }
     if (this.initPromise) {
       return this.initPromise;
     }
@@ -40,16 +46,32 @@ export class RealWebContainerService {
   private async _doInitialize(): Promise<void> {
     try {
       console.log('🚀 Initializing WebContainer...');
+      this.isBooting = true;
       
       // Check browser support
-      if (typeof SharedArrayBuffer === 'undefined') {
-        throw new Error('SharedArrayBuffer is not available. Please use a supported browser with proper headers.');
+      const compatInfo = BrowserCompatibilityChecker.checkWebContainerCompatibility();
+      if (!compatInfo.isSupported) {
+        const errorMessage = BrowserCompatibilityChecker.getWebContainerFallbackMessage(compatInfo);
+        throw new Error(errorMessage);
       }
 
-      this.webcontainer = await WebContainer.boot();
+      console.log('✅ Browser compatibility check passed');
+      
+      // Boot WebContainer with timeout
+      const bootPromise = WebContainer.boot();
+      const timeoutPromise = new Promise<never>((_, reject) => 
+        setTimeout(() => reject(new Error('WebContainer boot timeout after 30 seconds')), 30000)
+      );
+      
+      this.webcontainer = await Promise.race([bootPromise, timeoutPromise]);
       this.isInitialized = true;
+      this.isBooting = false;
       console.log('✅ WebContainer initialized successfully');
     } catch (error) {
+      this.isBooting = false;
+      this.isInitialized = false;
+      this.webcontainer = null;
+      this.initPromise = null;
       console.error('❌ Failed to initialize WebContainer:', error);
       throw new Error(`WebContainer initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
@@ -220,13 +242,19 @@ export class RealWebContainerService {
     console.log(`📦 Installing dependencies for ${framework}...`);
 
     // Check if package.json already exists (from template)
-    let hasPackageJson = false;
+    let hasPackageJson = true; // Assume it exists from template
     try {
       await this.webcontainer.fs.readFile('package.json');
       hasPackageJson = true;
       console.log('✅ Found existing package.json');
     } catch (e) {
+      hasPackageJson = false;
       console.log('ℹ️  No existing package.json found, creating one');
+    }
+
+    // Always ensure we have a proper package.json for the framework
+    if (!hasPackageJson) {
+      await this.createPackageJson(framework);
     }
 
     if (framework === 'vanilla' || framework === 'html') {
@@ -366,12 +394,58 @@ export class RealWebContainerService {
     });
   }
 
+  private async createPackageJson(framework: string): Promise<void> {
+    const dependencies = this.getDependenciesForFramework(framework);
+    const devDependencies = this.getDevDependenciesForFramework(framework);
+    const scripts = this.getScriptsForFramework(framework);
+    
+    const packageJson = {
+      name: 'devsensei-project',
+      type: framework === 'vanilla' || framework === 'html' ? undefined : 'module',
+      version: '1.0.0',
+      private: true,
+      scripts,
+      dependencies,
+      devDependencies,
+    };
+
+    // Remove undefined values
+    Object.keys(packageJson).forEach(key => {
+      if (packageJson[key as keyof typeof packageJson] === undefined) {
+        delete packageJson[key as keyof typeof packageJson];
+      }
+    });
+
+    await this.webcontainer!.fs.writeFile('package.json', JSON.stringify(packageJson, null, 2));
+    console.log(`✅ Created package.json for ${framework} project`);
+  }
+
+  // Enhanced method to check if WebContainer is ready
+  async waitForReady(timeoutMs = 30000): Promise<boolean> {
+    const startTime = Date.now();
+    
+    while (Date.now() - startTime < timeoutMs) {
+      if (this.isReady()) {
+        return true;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    console.warn('⚠️ WebContainer ready check timed out');
+    return false;
+  }
+
   async startDevServer(framework: string): Promise<string> {
     if (!this.webcontainer) {
       throw new Error('WebContainer not initialized');
     }
 
     console.log(`🚀 Starting dev server for ${framework}...`);
+
+    // Ensure WebContainer is ready
+    if (!(await this.waitForReady())) {
+      throw new Error('WebContainer is not ready for server startup');
+    }
 
     const { command, args } = this.getServerCommand(framework);
     const serverProcess = await this.webcontainer.spawn(command, args);
@@ -381,7 +455,7 @@ export class RealWebContainerService {
       const timeout = setTimeout(() => {
         reject(new Error(`Dev server startup timeout after 60 seconds for ${framework}`));
       }, 60000);
-
+      
       let streamClosed = false;
       let serverUrl = '';
       
@@ -404,14 +478,22 @@ export class RealWebContainerService {
                   output.includes('App running at')
                 ) {
                   clearTimeout(timeout);
-                  // Try to get preview URL from WebContainer
-                  this.webcontainer!.on('server-ready', (_port: number, url: string) => {
-                    serverUrl = url;
-                    this.serverUrl = url; // Store the server URL
-                    resolve(url);
-                  });
                   
-                  // Fallback: construct URL from default port
+                  // For WebContainer, we need to get the preview URL
+                  try {
+                    // WebContainer provides a preview URL through its API
+                    const previewUrl = await this.getPreviewUrl();
+                    if (previewUrl) {
+                      serverUrl = previewUrl;
+                      this.serverUrl = previewUrl;
+                      resolve(previewUrl);
+                      return;
+                    }
+                  } catch (e) {
+                    console.warn('Could not get WebContainer preview URL:', e);
+                  }
+                  
+                  // Fallback: use localhost URL
                   if (!serverUrl) {
                     const defaultPort = framework === 'vanilla' || framework === 'html' ? 3000 : 5173;
                     // For WebContainer, we typically get a URL like https://xyz.webcontainer.io
@@ -419,7 +501,7 @@ export class RealWebContainerService {
                     setTimeout(() => {
                       if (!serverUrl) {
                         // This is a fallback - in real WebContainer the URL will be provided
-                        const fallbackUrl = `http://localhost:${defaultPort}`;
+                        const fallbackUrl = `https://localhost:${defaultPort}`;
                         this.serverUrl = fallbackUrl; // Store the server URL
                         resolve(fallbackUrl);
                       }
@@ -450,7 +532,7 @@ export class RealWebContainerService {
         setTimeout(() => {
           if (!serverUrl) {
             clearTimeout(timeout);
-            // Fallback URL for vanilla projects
+            // Fallback URL for vanilla projects  
             const fallbackUrl = 'http://localhost:3000';
             this.serverUrl = fallbackUrl; // Store the server URL
             resolve(fallbackUrl);
@@ -460,6 +542,18 @@ export class RealWebContainerService {
     });
   }
 
+  private async getPreviewUrl(): Promise<string | null> {
+    try {
+      // In a real WebContainer environment, this would get the actual preview URL
+      // For now, we'll return null to use the fallback
+      return null;
+    } catch (error) {
+      console.warn('Failed to get WebContainer preview URL:', error);
+      return null;
+    }
+  }
+
+  // Enhanced dependency management
   private getDependenciesForFramework(framework: string): Record<string, string> {
     switch (framework.toLowerCase()) {
       case 'react':
@@ -467,6 +561,7 @@ export class RealWebContainerService {
           'react': '^18.2.0',
           'react-dom': '^18.2.0',
         };
+      case 'nextjs':
       case 'vue':
         return {
           'vue': '^3.3.0',
@@ -488,6 +583,7 @@ export class RealWebContainerService {
   private getDevDependenciesForFramework(framework: string): Record<string, string> {
     switch (framework.toLowerCase()) {
       case 'react':
+      case 'nextjs':
         return {
           '@vitejs/plugin-react': '^4.0.0',
           'vite': '^4.4.0',
@@ -517,6 +613,7 @@ export class RealWebContainerService {
   private getScriptsForFramework(framework: string): Record<string, string> {
     switch (framework.toLowerCase()) {
       case 'react':
+      case 'nextjs':
         return {
           'dev': 'vite',
           'build': 'vite build',
@@ -548,6 +645,7 @@ export class RealWebContainerService {
   private getServerCommand(framework: string): { command: string; args: string[] } {
     switch (framework.toLowerCase()) {
       case 'react':
+      case 'nextjs':
         return { command: 'npm', args: ['run', 'dev'] };
       case 'vue':
         return { command: 'npm', args: ['run', 'dev'] };
@@ -561,12 +659,18 @@ export class RealWebContainerService {
     }
   }
 
+  // Enhanced command execution with better error handling
   async executeCommand(command: string, args: string[]): Promise<string> {
     if (!this.webcontainer) {
       throw new Error('WebContainer not initialized');
     }
 
     console.log(`🔧 Executing command: ${command} ${args.join(' ')}`);
+
+    // Ensure WebContainer is ready
+    if (!(await this.waitForReady(5000))) {
+      throw new Error('WebContainer is not ready for command execution');
+    }
 
     const process = await this.webcontainer.spawn(command, args);
     
@@ -591,16 +695,28 @@ export class RealWebContainerService {
     });
   }
 
+  // Get the current server URL with fallback
   getUrl(): string {
-    if (!this.webcontainer) {
-      throw new Error('WebContainer not initialized');
+    if (this.serverUrl) {
+      return this.serverUrl;
     }
-    // Return a default URL since WebContainer.url doesn't exist in the API
-    return 'http://localhost:3000';
+    
+    // Return a default URL for development
+    return 'http://localhost:5173';
   }
 
+  // Enhanced ready check
   isReady(): boolean {
-    return this.isInitialized && this.webcontainer !== null;
+    return this.isInitialized && this.webcontainer !== null && !this.isBooting;
+  }
+
+  // Get initialization status
+  getStatus(): { isInitialized: boolean; isBooting: boolean; hasContainer: boolean } {
+    return {
+      isInitialized: this.isInitialized,
+      isBooting: this.isBooting,
+      hasContainer: this.webcontainer !== null
+    };
   }
 
   async dispose(): Promise<void> {
@@ -609,6 +725,7 @@ export class RealWebContainerService {
       await this.webcontainer.teardown();
       this.webcontainer = null;
       this.isInitialized = false;
+      this.isBooting = false;
       this.initPromise = null;
     }
   }

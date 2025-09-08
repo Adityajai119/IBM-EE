@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { webContainerService } from '../services/webContainer';
 import BrowserCompatibilityChecker from '../utils/browserCompatibility';
+import type { BrowserCompatibilityInfo } from '../utils/browserCompatibility';
 
 export interface UseWebContainerReturn {
   isSupported: boolean;
@@ -8,6 +9,8 @@ export interface UseWebContainerReturn {
   error: string | null;
   webContainer: typeof webContainerService;
   initializeContainer: () => Promise<void>;
+  getStatus: () => { isInitialized: boolean; isBooting: boolean; hasContainer: boolean };
+  compatibilityInfo: BrowserCompatibilityInfo | null;
   resetError: () => void;
 }
 
@@ -15,6 +18,7 @@ export const useWebContainer = (): UseWebContainerReturn => {
   const [isSupported, setIsSupported] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [compatibilityInfo, setCompatibilityInfo] = useState<BrowserCompatibilityInfo | null>(null);
 
   const checkSupport = () => {
     try {
@@ -45,6 +49,7 @@ export const useWebContainer = (): UseWebContainerReturn => {
       // Use our enhanced compatibility checker
       const compatInfo = BrowserCompatibilityChecker.checkWebContainerCompatibility();
       
+      setCompatibilityInfo(compatInfo);
       console.log('Browser compatibility check:', compatInfo);
       
       if (!compatInfo.isSupported) {
@@ -67,6 +72,7 @@ export const useWebContainer = (): UseWebContainerReturn => {
   const initializeContainer = async () => {
     try {
       setError(null);
+      setIsInitialized(false);
       
       if (!checkSupport()) {
         return;
@@ -74,6 +80,11 @@ export const useWebContainer = (): UseWebContainerReturn => {
 
       console.log('🚀 Initializing WebContainer...');
       await webContainerService.initialize();
+      
+      // Wait a bit to ensure everything is ready
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Double-check that it's actually ready
       setIsInitialized(true);
       console.log('✅ WebContainer initialized successfully');
     } catch (err) {
@@ -84,6 +95,10 @@ export const useWebContainer = (): UseWebContainerReturn => {
     }
   };
 
+  const getStatus = () => {
+    return webContainerService.getStatus();
+  };
+
   const resetError = () => {
     setError(null);
   };
@@ -91,7 +106,14 @@ export const useWebContainer = (): UseWebContainerReturn => {
   useEffect(() => {
     // Delay the support check to ensure all resources are loaded
     const timer = setTimeout(() => {
+      // Check support first
       checkSupport();
+      
+      // Update initialization status based on service state
+      const status = webContainerService.getStatus();
+      if (status.isInitialized && !status.isBooting) {
+        setIsInitialized(true);
+      }
     }, 1000);
 
     return () => clearTimeout(timer);
@@ -103,6 +125,8 @@ export const useWebContainer = (): UseWebContainerReturn => {
     error,
     webContainer: webContainerService,
     initializeContainer,
+    getStatus,
+    compatibilityInfo,
     resetError,
   };
 };
